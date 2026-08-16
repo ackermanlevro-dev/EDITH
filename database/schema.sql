@@ -67,3 +67,22 @@ CREATE TABLE IF NOT EXISTS document_tags (
     tag_id      UUID NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (document_id, tag_id)
 );
+
+-- [[Wikilink]] graph, parsed from note bodies during ingestion. target_title
+-- is deliberately just text, not a foreign key resolved at write time: a
+-- note can link to one that doesn't exist yet (a common, deliberate PKM
+-- pattern - marking a note to create later), and a write-time-resolved FK
+-- would stay NULL forever even after the target note shows up. Resolving by
+-- title at query time instead means a backlink becomes visible the moment
+-- the target is indexed, with no backfill pass required.
+CREATE TABLE IF NOT EXISTS note_relationships (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    target_title       TEXT NOT NULL,
+    relationship_type  TEXT NOT NULL DEFAULT 'links_to',
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_document_id, target_title, relationship_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_relationships_source ON note_relationships (source_document_id);
+CREATE INDEX IF NOT EXISTS idx_relationships_target_title ON note_relationships (lower(target_title));

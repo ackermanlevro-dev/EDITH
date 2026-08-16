@@ -74,7 +74,7 @@ class DocumentRepository:
             doc.content_hash,
             doc.domain,
             doc.category,
-            json.dumps(doc.metadata or {}),
+            json.dumps(doc.metadata or {}, default=str),
         )
         return row["id"]
 
@@ -98,13 +98,103 @@ class DocumentRepository:
                         c["content"],
                         c["heading_path"],
                         c["embedding"],
-                        json.dumps(c.get("metadata") or {}),
+                        json.dumps(c.get("metadata") or {}, default=str),
                     )
 
     async def chunk_count(self, document_id: UUID) -> int:
         return await self._pool.fetchval(
             "SELECT count(*) FROM document_chunks WHERE document_id = $1", document_id
         )
+
+    async def set_document_tags(self, document_id: UUID, tag_names: list[str]) -> None:
+        """Delete + reinsert, same pattern as replace_chunks - a re-index with
+        a changed tag list must never leave the old tags attached."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM document_tags WHERE document_id = $1", document_id
+                )
+                for name in tag_names:
+                    tag_id = await conn.fetchval(
+                        """
+                        INSERT INTO tags (name) VALUES ($1)
+                        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                        RETURNING id
+                        """,
+                        name,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO document_tags (document_id, tag_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT (document_id, tag_id) DO NOTHING
+                        """,
+                        document_id,
+                        tag_id,
+                    )
+
+    async def get_tags(self, document_id: UUID) -> list[str]:
+        rows = await self._pool.fetch(
+            """
+            SELECT t.name FROM tags t
+            JOIN document_tags dt ON dt.tag_id = t.id
+            WHERE dt.document_id = $1
+            ORDER BY t.name
+            """,
+            document_id,
+        )
+        return [r["name"] for r in rows]
+
+    async def set_relationships(
+        self, document_id: UUID, target_titles: list[str], relationship_type: str = "links_to"
+    ) -> None:
+        """target_titles are stored as plain text, not resolved to a document
+        id here - see the comment on note_relationships in database/schema.sql
+        for why (a link to a not-yet-created note must not go stale)."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    DELETE FROM note_relationships
+                    WHERE source_document_id = $1 AND relationship_type = $2
+                    """,
+                    document_id,
+                    relationship_type,
+                )
+                for title in target_titles:
+                    await conn.execute(
+                        """
+                        INSERT INTO note_relationships (source_document_id, target_title, relationship_type)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (source_document_id, target_title, relationship_type) DO NOTHING
+                        """,
+                        document_id,
+                        title,
+                        relationship_type,
+                    )
+
+    async def get_outgoing_links(self, document_id: UUID) -> list[str]:
+        rows = await self._pool.fetch(
+            "SELECT target_title FROM note_relationships WHERE source_document_id = $1 ORDER BY target_title",
+            document_id,
+        )
+        return [r["target_title"] for r in rows]
+
+    async def get_backlinks(self, title: str) -> list[DocumentRecord]:
+        """Notes that link to `title` - resolved by matching at query time
+        (case-insensitively, as Obsidian itself resolves links), not by a
+        stored foreign key, so a backlink appears the moment the source note
+        is indexed with no separate resolution pass needed."""
+        rows = await self._pool.fetch(
+            """
+            SELECT d.* FROM note_relationships r
+            JOIN documents d ON d.id = r.source_document_id
+            WHERE lower(r.target_title) = lower($1)
+            ORDER BY d.title
+            """,
+            title,
+        )
+        return [_row_to_document(r) for r in rows]
 
     async def hybrid_search(
         self, query_embedding: list[float], query_text: str, top_k: int

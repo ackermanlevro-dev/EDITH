@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from backend.ingestion.frontmatter import extract_wikilinks, normalize_tags, parse_frontmatter
+
 # Never index these, regardless of source - secrets, VCS internals, and
 # dependency trees have no business in a personal knowledge index.
 DEFAULT_IGNORE_PATTERNS = {
@@ -39,7 +41,46 @@ class RawDocument:
     content_hash: str
     domain: str | None = None
     category: str | None = None
+    tags: list[str] = field(default_factory=list)
+    links: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+
+
+def _load_markdown_document(
+    path: Path,
+    *,
+    source_type: str,
+    default_domain: str | None,
+    default_category: str | None,
+) -> RawDocument:
+    """Shared by FileSource and ObsidianSource so frontmatter/link parsing
+    behaves identically regardless of where a document came from.
+
+    content_hash is computed on the raw file (frontmatter included), so
+    editing just a tag or a link still triggers re-indexing - but the
+    frontmatter block itself is stripped from `content` before it ever
+    reaches the chunker, so raw YAML never pollutes an embedding. Frontmatter
+    domain/category override the caller's default rather than the other way
+    around - a note that says what it is should win over a folder-path
+    guess. Nothing from frontmatter is discarded even when not promoted to
+    its own column: the full dict rides along in metadata.frontmatter.
+    """
+    raw_text = path.read_text(encoding="utf-8")
+    frontmatter, body = parse_frontmatter(raw_text)
+
+    return RawDocument(
+        source_type=source_type,
+        source_path=str(path.resolve()),
+        title=path.stem,
+        mime_type="text/markdown" if path.suffix == ".md" else "text/plain",
+        content=body,
+        content_hash=hash_content(raw_text),
+        domain=frontmatter.get("domain") or default_domain,
+        category=frontmatter.get("category") or default_category,
+        tags=normalize_tags(frontmatter.get("tags")),
+        links=extract_wikilinks(body),
+        metadata={"frontmatter": frontmatter} if frontmatter else {},
+    )
 
 
 class KnowledgeSource(ABC):
@@ -52,7 +93,12 @@ class KnowledgeSource(ABC):
 
 
 class FileSource(KnowledgeSource):
-    """An explicit file, or every .md file under a directory - the upload path."""
+    """An explicit file, or every .md file under a directory - the upload
+    path. source_type defaults to "file" but NoteWriter overrides it to
+    "obsidian" when the file it just wrote lives inside the vault - without
+    that, a note created through chat would be invisible to vault sync's
+    deletion reconciliation (which only scopes to source_type='obsidian'),
+    leaving an orphaned row behind the moment the user deletes it in Obsidian."""
 
     def __init__(
         self,
@@ -60,34 +106,29 @@ class FileSource(KnowledgeSource):
         *,
         domain: str | None = None,
         category: str | None = None,
+        source_type: str = "file",
     ):
         self._paths = paths
         self._domain = domain
         self._category = category
+        self._source_type = source_type
 
     def discover(self) -> list[RawDocument]:
-        docs = []
-        for path in self._paths:
-            content = path.read_text(encoding="utf-8")
-            docs.append(
-                RawDocument(
-                    source_type="file",
-                    source_path=str(path.resolve()),
-                    title=path.stem,
-                    mime_type="text/markdown" if path.suffix == ".md" else "text/plain",
-                    content=content,
-                    content_hash=hash_content(content),
-                    domain=self._domain,
-                    category=self._category,
-                )
+        return [
+            _load_markdown_document(
+                path,
+                source_type=self._source_type,
+                default_domain=self._domain,
+                default_category=self._category,
             )
-        return docs
+            for path in self._paths
+        ]
 
 
 class ObsidianSource(KnowledgeSource):
-    """Walks a vault directory for Markdown files. Full incremental vault
-    sync with backlinks/frontmatter is Phase 3 - this exercises the same
-    ingestion pipeline against a real vault today, folder-as-category."""
+    """Walks a vault directory for Markdown files, folder-as-category by
+    default (overridable by frontmatter). Full incremental sync with
+    deletion detection lives in IngestionPipeline.sync_vault."""
 
     def __init__(self, vault_path: Path, *, ignore_patterns: set[str] | None = None):
         self._vault_path = vault_path
@@ -99,17 +140,14 @@ class ObsidianSource(KnowledgeSource):
             if any(part in self._ignore for part in path.parts):
                 continue
 
-            content = path.read_text(encoding="utf-8")
             rel = path.relative_to(self._vault_path)
+            folder_category = str(rel.parent) if rel.parent != Path(".") else None
             docs.append(
-                RawDocument(
+                _load_markdown_document(
+                    path,
                     source_type="obsidian",
-                    source_path=str(path.resolve()),
-                    title=path.stem,
-                    mime_type="text/markdown",
-                    content=content,
-                    content_hash=hash_content(content),
-                    category=str(rel.parent) if rel.parent != Path(".") else None,
+                    default_domain=None,
+                    default_category=folder_category,
                 )
             )
         return docs

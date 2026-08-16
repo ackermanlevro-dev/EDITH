@@ -1,7 +1,7 @@
 """Requires the real pgvector container and Ollama running. Always writes into
 tmp_path, never the configured real vault - see conftest.ctx for why."""
 
-from backend.ingestion.sources import FileSource
+from backend.ingestion.sources import FileSource, ObsidianSource
 from backend.notes.writer import NoteWriter
 
 
@@ -81,3 +81,23 @@ async def test_unrelated_note_gets_no_forced_links(ctx, clean_documents, tmp_pat
     # docs about Linux/AWS/projects exist in the shared corpus and must not
     # be force-linked to a grocery list.
     assert "## Related" not in text
+
+
+async def test_created_notes_are_cleaned_up_by_a_later_vault_sync(ctx, clean_documents, tmp_path):
+    # A note created through NoteWriter is a real file inside the vault, so
+    # deleting it from disk (as the user would in Obsidian) must make a
+    # later vault sync notice and remove it - not leave an orphaned row
+    # behind because it was indexed as source_type="file" instead of
+    # "obsidian". Regression test for exactly that bug.
+    writer = make_writer(ctx, tmp_path)
+    created = await writer.create_note("Throwaway Note", "Temporary content.")
+    clean_documents.append(str(created.path.resolve()))
+
+    doc = await ctx.repository.get_by_source_path(str(created.path.resolve()))
+    assert doc.source_type == "obsidian"
+
+    created.path.unlink()
+    sync_result = await ctx.pipeline.sync_vault(ObsidianSource(tmp_path), tmp_path)
+
+    assert str(created.path.resolve()) in sync_result.deleted
+    assert await ctx.repository.get_by_source_path(str(created.path.resolve())) is None

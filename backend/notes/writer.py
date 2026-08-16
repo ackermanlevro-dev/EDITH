@@ -79,8 +79,10 @@ class NoteWriter:
         dest.write_text(self._render(title, content, tags, related), encoding="utf-8")
 
         # Index right away - "saved" should mean searchable now, not after the
-        # user remembers to run a vault sync.
-        await self._pipeline.index_source(FileSource([dest]))
+        # user remembers to run a vault sync. source_type="obsidian" (not the
+        # FileSource default of "file") so this note is later covered by
+        # vault sync's deletion reconciliation, like every other vault note.
+        await self._pipeline.index_source(FileSource([dest], source_type="obsidian"))
 
         return CreatedNote(path=dest, related=related)
 

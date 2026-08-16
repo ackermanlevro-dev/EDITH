@@ -14,6 +14,7 @@ from backend.ingestion.pipeline import IngestionPipeline
 from backend.notes.writer import NoteWriter
 from backend.rag.generation import AnswerGenerator
 from backend.rag.router import QueryRouter
+from backend.storage.file_storage import FileStorage, LocalFileStorage
 
 
 @dataclass
@@ -29,6 +30,7 @@ class AppContext:
     pipeline: IngestionPipeline
     generator: AnswerGenerator
     notes: NoteWriter | None  # None when OBSIDIAN_VAULT_PATH isn't configured
+    file_storage: FileStorage
 
     async def close(self) -> None:
         await self.llm.close()
@@ -59,6 +61,8 @@ async def build_context(settings: Settings) -> AppContext:
     if settings.obsidian_vault_path:
         notes = NoteWriter(Path(settings.obsidian_vault_path), repository, embeddings, pipeline)
 
+    file_storage = LocalFileStorage(Path(settings.upload_dir))
+
     return AppContext(
         settings=settings,
         pool=pool,
@@ -68,4 +72,5 @@ async def build_context(settings: Settings) -> AppContext:
         pipeline=pipeline,
         generator=generator,
         notes=notes,
+        file_storage=file_storage,
     )

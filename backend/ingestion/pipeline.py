@@ -96,6 +96,8 @@ class IngestionPipeline:
         # bookkeeping; fine at personal-knowledge-base scale. Revisit only if
         # per-document chunk counts grow large enough to make that wasteful.
         await self._repository.replace_chunks(document_id, rows)
+        await self._repository.set_document_tags(document_id, doc.tags)
+        await self._repository.set_relationships(document_id, doc.links)
 
         status = "updated" if existing else "created"
         return IndexResult(source_path=doc.source_path, status=status, chunk_count=len(rows))

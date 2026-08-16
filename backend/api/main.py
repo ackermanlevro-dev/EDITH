@@ -25,8 +25,6 @@ from backend.config.settings import get_settings
 from backend.container import build_context
 from backend.ingestion.sources import FileSource, ObsidianSource, parse_ignore_patterns
 
-UPLOAD_DIR = Path("uploads")  # gitignored - uploaded documents live here, not in git
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -101,11 +99,9 @@ async def upload_document(
     if not file.filename or not file.filename.lower().endswith((".md", ".txt")):
         raise HTTPException(status_code=400, detail="Only .md and .txt files are supported right now.")
 
-    UPLOAD_DIR.mkdir(exist_ok=True)
-    dest = UPLOAD_DIR / file.filename
-    dest.write_bytes(await file.read())
-
     ctx = app.state.ctx
+    dest = ctx.file_storage.save(file.filename, await file.read())
+
     source = FileSource([dest], domain=domain, category=category)
     results = await ctx.pipeline.index_source(source)
     return IndexResponse(

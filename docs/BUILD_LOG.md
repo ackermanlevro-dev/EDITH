@@ -273,3 +273,73 @@ not just tests: created two related notes, confirmed the second correctly
 linked to the first via `[[...]]`, confirmed the file's frontmatter/heading
 render as expected. Both are clearly prefixed `[TEST - delete me]` and left
 in place for visual confirmation in Obsidian's graph view before deletion.
+
+## EDITH refinement pass - Priority 1 + 2 (architecture + Obsidian ingestion)
+
+Scoped deliberately to the first two of the spec's seven ordered priorities;
+Priority 3-7 (document loader architecture, PDF/DOCX ingestion, the full
+UI workspace redesign, memory/project pages) are explicitly deferred, not
+attempted here - "do not implement all future features now" per the spec.
+
+**Frontmatter + wikilinks.** New `backend/ingestion/frontmatter.py`:
+`parse_frontmatter` (never raises - malformed YAML or no frontmatter at all
+both fall back to "treat as plain text" rather than breaking ingestion) and
+`extract_wikilinks` (`[[Note]]`, `[[Note|Alias]]`, `[[Note#Heading]]` all
+resolve to the same target title). Shared by both `FileSource` and
+`ObsidianSource` via a new `_load_markdown_document` helper, so an uploaded
+file with frontmatter behaves the same as a vault note with frontmatter.
+
+- Frontmatter `domain`/`category` override the existing folder-based
+  fallback; the full parsed dict is preserved under `metadata.frontmatter`
+  regardless, so no field is ever silently dropped even if not promoted to
+  its own column - deliberately not adding a dozen new mandatory schema
+  columns for `type`/`topic`/`status`/etc.
+- `content_hash` is computed on the *raw* file (frontmatter included), so
+  editing just a tag still triggers re-indexing, but the frontmatter block
+  itself never reaches the chunker - verified by
+  `test_frontmatter_is_stripped_from_chunk_content`.
+
+**Tags and relationships.** The `tags`/`document_tags` tables already
+existed in the schema since Phase 2 but nothing populated them - wired up
+now via `DocumentRepository.set_document_tags` (delete+reinsert, same
+pattern as `replace_chunks`). New `note_relationships` table stores
+`[[wikilink]]` targets as **text**, not a foreign key resolved at write
+time - a deliberate choice: a note can link to one that doesn't exist yet
+(a common PKM pattern), and a write-time-resolved FK would stay `NULL`
+forever even after the target is created. `get_backlinks` resolves by title
+at query time instead, so a backlink becomes visible the moment its target
+is indexed with no backfill pass required - proven by
+`test_backlinks_resolve_once_the_target_note_is_indexed`.
+
+**`FileStorage` abstraction** (section 6C): `LocalFileStorage` now sits
+between the upload endpoint and the filesystem, matching the "prepare for
+S3 later, don't build it now" instruction - no behavior change, just a seam.
+
+**Two real bugs found via live testing, not by inspection:**
+
+1. `NoteWriter`'s own generated frontmatter (`created: 2026-08-16`) gets
+   parsed by PyYAML as a native `datetime.date` object, not a string - which
+   isn't JSON-serializable, so indexing a note EDITH itself created crashed
+   with `TypeError: Object of type date is not JSON serializable`. Fixed by
+   adding `default=str` to both `json.dumps` calls in
+   `DocumentRepository` - a generic, low-risk fallback for any future
+   YAML-derived type with the same problem (datetimes, etc.), not a
+   date-specific patch.
+2. Re-syncing the real configured vault after this work surfaced a second,
+   independent bug: `NoteWriter` indexes new notes via `FileSource`, which
+   always tagged them `source_type="file"` - even though the note physically
+   lives inside the vault. Vault sync's deletion reconciliation only scopes
+   to `source_type='obsidian'`, so a note created through chat and later
+   deleted in Obsidian would leave an orphaned row behind forever. Confirmed
+   live: two `[TEST - delete me]` notes from the earlier session, deleted by
+   the user, were still sitting in the real database. Fixed by giving
+   `FileSource` an optional `source_type` override and having `NoteWriter`
+   pass `source_type="obsidian"`; regression test
+   `test_created_notes_are_cleaned_up_by_a_later_vault_sync` added. The two
+   orphaned rows were manually cleaned out of the real database.
+
+**Tests:** 21 new (frontmatter/wikilinks unit tests, FileStorage unit
+tests, a full Obsidian-metadata integration suite covering frontmatter
+override, tag storage, relationship storage/resolution, incremental
+hashing on a frontmatter-only edit, and cascade-on-delete). Full suite: 49
+passed.

@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
     top_k: int = 5
 
+    # Where FileStorage.save() puts uploaded documents before ingestion.
+    upload_dir: str = "uploads"
+
     web_search_enabled: bool = False
     cloud_llm_enabled: bool = False
 
