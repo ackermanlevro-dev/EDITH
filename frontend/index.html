@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Second Brain</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <h1>🧠 Second Brain</h1>
+    <nav class="tabs">
+      <button class="tab-btn is-active" data-tab="chat" type="button">Chat</button>
+      <button class="tab-btn" data-tab="knowledge" type="button">Knowledge</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="chat-view" class="view is-active">
+      <div id="messages" class="messages">
+        <div class="empty-state">
+          Ask anything — general knowledge, your notes, or both. Sources are shown when your notes are used.
+        </div>
+      </div>
+      <form id="chat-form" class="chat-input">
+        <input id="chat-input" type="text" placeholder="Ask anything..." autocomplete="off" />
+        <button type="submit">Send</button>
+      </form>
+    </section>
+
+    <section id="knowledge-view" class="view">
+      <div class="panel">
+        <h2>Search</h2>
+        <form id="search-form" class="row-form">
+          <input id="search-input" type="text" placeholder="Search your knowledge base..." autocomplete="off" />
+          <button type="submit">Search</button>
+        </form>
+        <div id="search-results" class="search-results"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Obsidian vault</h2>
+        <p id="vault-path" class="muted">Loading configuration…</p>
+        <button id="sync-vault-btn" type="button">Sync vault</button>
+        <div id="sync-status" class="status"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Upload a document</h2>
+        <p class="muted">Markdown or plain text for now.</p>
+        <form id="upload-form" class="row-form">
+          <input id="upload-file" type="file" accept=".md,.txt" />
+          <button type="submit">Upload &amp; index</button>
+        </form>
+        <div id="upload-status" class="status"></div>
+      </div>
+    </section>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

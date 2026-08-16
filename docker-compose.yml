@@ -1,0 +1,23 @@
+services:
+  vectordb:
+    image: pgvector/pgvector:pg16
+    container_name: second-brain-vectordb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-secondbrain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secondbrain}
+      POSTGRES_DB: ${POSTGRES_DB:-secondbrain}
+    ports:
+      # Host 5433 -> container 5432. Host 5432 is already used by a native
+      # PostgreSQL install on this machine, so we avoid colliding with it.
+      - "5433:5432"
+    volumes:
+      - vectordb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-secondbrain}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  vectordb_data:
