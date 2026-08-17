@@ -343,3 +343,36 @@ tests, a full Obsidian-metadata integration suite covering frontmatter
 override, tag storage, relationship storage/resolution, incremental
 hashing on a frontmatter-only edit, and cascade-on-delete). Full suite: 49
 passed.
+
+## PDF upload support
+
+User-reported gap: uploads only accepted .md/.txt, PDFs were rejected
+outright. This is the first slice of the spec's Priority 3
+(`DocumentLoader` architecture) - built for real this time, not deferred,
+but scoped to exactly what was needed: a `TextLoader` (wraps the existing
+.md/.txt path) and a `PDFLoader`, not the full DOCX/HTML/CSV/JSON set the
+spec eventually wants. Adding one of those later is one new class
+registered in `backend/ingestion/loaders.py`, not a rewrite.
+
+- `DocumentLoader.EXTENSIONS` + `can_load`/`load` on the base class; a
+  small registry (`get_loader`, `supported_extensions`) replaces every
+  place that used to hardcode `.rglob("*.md")` or `.endswith((".md", ".txt"))`
+  - the upload endpoint, the `index` CLI command, and `ObsidianSource`
+  (which now also picks up PDFs attached inside the vault, not just notes).
+- `PDFLoader` extracts text per page via `pypdf`, marking page boundaries
+  (`<!-- page:N -->`) so a retrieved chunk can still be attributed to a
+  page - per spec section 20. Frontmatter/wikilink parsing only runs for
+  `.md` files now (was previously assumed for every file `_load_document`
+  touched) - meaningless, and harmless to skip, for PDF text.
+- A scanned/image-only PDF yields no extractable text and indexes as an
+  empty (zero-chunk) document rather than fabricating content - OCR is
+  explicitly a later phase, not something to fake here.
+- Test PDF fixtures are hand-built byte-for-byte in `tests/pdf_fixtures.py`
+  (byte offsets computed as the file is assembled, not guessed) rather than
+  pulling in a PDF-authoring dependency just for tests - verified against
+  `pypdf` directly before committing to the approach.
+
+8 new tests (loader unit tests, PDF ingestion + idempotent re-index
+integration tests). Verified live via the CLI against a real PDF: indexed,
+ranked first in a semantic search for its content, then cleaned out of the
+real index afterward. Full suite: 57 passed.

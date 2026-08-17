@@ -13,6 +13,7 @@ from pathlib import Path
 
 from backend.config.settings import get_settings
 from backend.container import build_context
+from backend.ingestion.loaders import supported_extensions
 from backend.ingestion.sources import FileSource, ObsidianSource, parse_ignore_patterns
 
 
@@ -20,7 +21,9 @@ async def _index(args: argparse.Namespace) -> None:
     ctx = await build_context(get_settings())
     try:
         path = Path(args.path)
-        files = [path] if path.is_file() else sorted(path.rglob("*.md"))
+        files = [path] if path.is_file() else sorted(
+            p for ext in supported_extensions() for p in path.rglob(f"*{ext}")
+        )
         source = FileSource(files, domain=args.domain, category=args.category)
 
         for r in await ctx.pipeline.index_source(source):

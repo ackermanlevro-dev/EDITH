@@ -23,7 +23,10 @@ from backend.api.schemas import (
 )
 from backend.config.settings import get_settings
 from backend.container import build_context
+from backend.ingestion.loaders import supported_extensions
 from backend.ingestion.sources import FileSource, ObsidianSource, parse_ignore_patterns
+
+UPLOAD_EXTENSIONS = tuple(supported_extensions())
 
 
 @asynccontextmanager
@@ -77,7 +80,9 @@ async def index_documents(req: IndexRequest):
             deleted=sync_result.deleted,
         )
 
-    files = [path] if path.is_file() else sorted(path.rglob("*.md"))
+    files = [path] if path.is_file() else sorted(
+        p for ext in supported_extensions() for p in path.rglob(f"*{ext}")
+    )
     source = FileSource(files, domain=req.domain, category=req.category)
     results = await ctx.pipeline.index_source(source)
     return IndexResponse(
@@ -94,10 +99,12 @@ async def upload_document(
     domain: str | None = Form(None),
     category: str | None = Form(None),
 ):
-    """The drag-and-drop path: browser sends bytes, not a server-side path.
-    Markdown/text only for now - PDF/DOCX extraction is a later phase."""
-    if not file.filename or not file.filename.lower().endswith((".md", ".txt")):
-        raise HTTPException(status_code=400, detail="Only .md and .txt files are supported right now.")
+    """The drag-and-drop path: browser sends bytes, not a server-side path."""
+    if not file.filename or not file.filename.lower().endswith(UPLOAD_EXTENSIONS):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Supported file types: {', '.join(UPLOAD_EXTENSIONS)}",
+        )
 
     ctx = app.state.ctx
     dest = ctx.file_storage.save(file.filename, await file.read())

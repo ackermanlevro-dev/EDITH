@@ -6,6 +6,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend.ingestion.frontmatter import extract_wikilinks, normalize_tags, parse_frontmatter
+from backend.ingestion.loaders import get_loader, supported_extensions
+
+_MIME_TYPES = {
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".pdf": "application/pdf",
+}
 
 # Never index these, regardless of source - secrets, VCS internals, and
 # dependency trees have no business in a personal knowledge index.
@@ -46,33 +53,44 @@ class RawDocument:
     metadata: dict = field(default_factory=dict)
 
 
-def _load_markdown_document(
+def _load_document(
     path: Path,
     *,
     source_type: str,
     default_domain: str | None,
     default_category: str | None,
 ) -> RawDocument:
-    """Shared by FileSource and ObsidianSource so frontmatter/link parsing
-    behaves identically regardless of where a document came from.
+    """Shared by FileSource and ObsidianSource so a document behaves
+    identically regardless of where it came from. The loader (see
+    ingestion/loaders.py) handles the format-specific part - turning PDF
+    bytes or Markdown text into plain text - everything after that is the
+    same regardless of source format.
 
-    content_hash is computed on the raw file (frontmatter included), so
-    editing just a tag or a link still triggers re-indexing - but the
-    frontmatter block itself is stripped from `content` before it ever
-    reaches the chunker, so raw YAML never pollutes an embedding. Frontmatter
-    domain/category override the caller's default rather than the other way
-    around - a note that says what it is should win over a folder-path
-    guess. Nothing from frontmatter is discarded even when not promoted to
-    its own column: the full dict rides along in metadata.frontmatter.
+    Frontmatter/wikilinks are a Markdown convention, so they're only parsed
+    for .md files; a PDF's extracted text just becomes the content as-is.
+    content_hash is computed on the loader's raw output (frontmatter
+    included, for Markdown), so editing just a tag or a link still triggers
+    re-indexing - but the frontmatter block itself is stripped from
+    `content` before it ever reaches the chunker, so raw YAML never
+    pollutes an embedding. Frontmatter domain/category override the
+    caller's default rather than the other way around - a note that says
+    what it is should win over a folder-path guess. Nothing from
+    frontmatter is discarded even when not promoted to its own column: the
+    full dict rides along in metadata.frontmatter.
     """
-    raw_text = path.read_text(encoding="utf-8")
-    frontmatter, body = parse_frontmatter(raw_text)
+    loader = get_loader(path)
+    raw_text = loader.load(path)
+
+    if path.suffix.lower() == ".md":
+        frontmatter, body = parse_frontmatter(raw_text)
+    else:
+        frontmatter, body = {}, raw_text
 
     return RawDocument(
         source_type=source_type,
         source_path=str(path.resolve()),
         title=path.stem,
-        mime_type="text/markdown" if path.suffix == ".md" else "text/plain",
+        mime_type=_MIME_TYPES.get(path.suffix.lower(), "application/octet-stream"),
         content=body,
         content_hash=hash_content(raw_text),
         domain=frontmatter.get("domain") or default_domain,
@@ -115,7 +133,7 @@ class FileSource(KnowledgeSource):
 
     def discover(self) -> list[RawDocument]:
         return [
-            _load_markdown_document(
+            _load_document(
                 path,
                 source_type=self._source_type,
                 default_domain=self._domain,
@@ -126,24 +144,31 @@ class FileSource(KnowledgeSource):
 
 
 class ObsidianSource(KnowledgeSource):
-    """Walks a vault directory for Markdown files, folder-as-category by
-    default (overridable by frontmatter). Full incremental sync with
-    deletion detection lives in IngestionPipeline.sync_vault."""
+    """Walks a vault directory for Markdown files and PDFs attached to it
+    (Obsidian supports embedding PDFs directly in a vault), folder-as-category
+    by default (overridable by frontmatter for Markdown). Full incremental
+    sync with deletion detection lives in IngestionPipeline.sync_vault."""
 
     def __init__(self, vault_path: Path, *, ignore_patterns: set[str] | None = None):
         self._vault_path = vault_path
         self._ignore = ignore_patterns or DEFAULT_IGNORE_PATTERNS
 
     def discover(self) -> list[RawDocument]:
+        paths = [
+            p
+            for ext in supported_extensions()
+            for p in self._vault_path.rglob(f"*{ext}")
+        ]
+
         docs = []
-        for path in sorted(self._vault_path.rglob("*.md")):
+        for path in sorted(paths):
             if any(part in self._ignore for part in path.parts):
                 continue
 
             rel = path.relative_to(self._vault_path)
             folder_category = str(rel.parent) if rel.parent != Path(".") else None
             docs.append(
-                _load_markdown_document(
+                _load_document(
                     path,
                     source_type="obsidian",
                     default_domain=None,
