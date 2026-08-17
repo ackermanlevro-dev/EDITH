@@ -20,10 +20,11 @@ from backend.api.schemas import (
     SearchResponse,
     SearchResultItem,
     SourceItem,
+    UploadResponse,
 )
 from backend.config.settings import get_settings
 from backend.container import build_context
-from backend.ingestion.loaders import supported_extensions
+from backend.ingestion.loaders import get_loader, supported_extensions
 from backend.ingestion.sources import FileSource, ObsidianSource, parse_ignore_patterns
 
 UPLOAD_EXTENSIONS = tuple(supported_extensions())
@@ -93,13 +94,23 @@ async def index_documents(req: IndexRequest):
     )
 
 
-@app.post("/api/documents/upload", response_model=IndexResponse)
+@app.post("/api/documents/upload", response_model=UploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
     domain: str | None = Form(None),
     category: str | None = Form(None),
 ):
-    """The drag-and-drop path: browser sends bytes, not a server-side path."""
+    """The drag-and-drop path: browser sends bytes, not a server-side path.
+
+    When a vault is configured, an upload is folded into it as a real note -
+    not left as a standalone file sitting outside the connected knowledge
+    graph - auto-linked to related existing notes the same way NoteWriter
+    links a note saved from chat. The raw upload is still kept in
+    UPLOAD_DIR as an archival copy, but only the derived note is indexed;
+    indexing both would put near-duplicate content in every search result.
+    With no vault configured, falls back to indexing the uploaded file
+    directly, as before.
+    """
     if not file.filename or not file.filename.lower().endswith(UPLOAD_EXTENSIONS):
         raise HTTPException(
             status_code=400,
@@ -109,13 +120,28 @@ async def upload_document(
     ctx = app.state.ctx
     dest = ctx.file_storage.save(file.filename, await file.read())
 
+    if ctx.notes:
+        text = get_loader(dest).load(dest)
+        title = Path(file.filename).stem.replace("_", " ")
+        result = await ctx.notes.create_note(
+            title, text, folder="Imports", domain=domain, category=category
+        )
+        return UploadResponse(
+            source_path=str(result.path),
+            status="created",
+            chunk_count=result.chunk_count,
+            saved_as_note=True,
+            related=[
+                RelatedNoteItem(title=r.title, source_path=r.source_path, score=round(r.score, 4))
+                for r in result.related
+            ],
+        )
+
     source = FileSource([dest], domain=domain, category=category)
     results = await ctx.pipeline.index_source(source)
-    return IndexResponse(
-        results=[
-            IndexResultItem(source_path=r.source_path, status=r.status, chunk_count=r.chunk_count)
-            for r in results
-        ]
+    r = results[0]
+    return UploadResponse(
+        source_path=r.source_path, status=r.status, chunk_count=r.chunk_count, saved_as_note=False
     )
 
 
@@ -127,9 +153,12 @@ async def create_note(req: NoteCreateRequest):
             status_code=400,
             detail="OBSIDIAN_VAULT_PATH is not configured - there's nowhere to save a note.",
         )
-    result = await ctx.notes.create_note(req.title, req.content, folder=req.folder, tags=req.tags)
+    result = await ctx.notes.create_note(
+        req.title, req.content, folder=req.folder, tags=req.tags, domain=req.domain, category=req.category
+    )
     return NoteCreateResponse(
         path=str(result.path),
+        chunk_count=result.chunk_count,
         related=[
             RelatedNoteItem(title=r.title, source_path=r.source_path, score=round(r.score, 4))
             for r in result.related

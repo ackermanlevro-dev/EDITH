@@ -299,12 +299,18 @@ uploadForm.addEventListener("submit", async (e) => {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.detail || `Upload failed (${res.status})`);
     }
-    const result = await res.json();
-    const r = result.results[0];
+    const r = await res.json();
     uploadStatusEl.className = "status ok";
-    uploadStatusEl.textContent = r
-      ? `${r.status}: ${r.source_path} (${r.chunk_count} chunks)`
-      : "Uploaded, nothing to index.";
+    if (r.saved_as_note) {
+      const relatedText = r.related.length
+        ? ` Linked to ${r.related.length} related note${r.related.length > 1 ? "s" : ""}: ${r.related
+            .map((x) => `[[${x.title}]]`)
+            .join(", ")}.`
+        : " No closely related notes found to link.";
+      uploadStatusEl.textContent = `Saved as an Obsidian note (${r.chunk_count} chunks).${relatedText}`;
+    } else {
+      uploadStatusEl.textContent = `${r.status}: ${r.source_path} (${r.chunk_count} chunks)`;
+    }
     uploadForm.reset();
   } catch (err) {
     uploadStatusEl.className = "status error";

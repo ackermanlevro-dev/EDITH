@@ -26,6 +26,7 @@ class RelatedNote:
 class CreatedNote:
     path: Path
     related: list[RelatedNote]
+    chunk_count: int
 
 
 def sanitize_filename(title: str) -> str:
@@ -63,6 +64,8 @@ class NoteWriter:
         *,
         folder: str | None = None,
         tags: list[str] | None = None,
+        domain: str | None = None,
+        category: str | None = None,
     ) -> CreatedNote:
         related = await self._find_related(content)
 
@@ -76,15 +79,15 @@ class NoteWriter:
             dest = dest_dir / f"{filename} ({n}).md"
             n += 1
 
-        dest.write_text(self._render(title, content, tags, related), encoding="utf-8")
+        dest.write_text(self._render(title, content, tags, domain, category, related), encoding="utf-8")
 
         # Index right away - "saved" should mean searchable now, not after the
         # user remembers to run a vault sync. source_type="obsidian" (not the
         # FileSource default of "file") so this note is later covered by
         # vault sync's deletion reconciliation, like every other vault note.
-        await self._pipeline.index_source(FileSource([dest], source_type="obsidian"))
+        results = await self._pipeline.index_source(FileSource([dest], source_type="obsidian"))
 
-        return CreatedNote(path=dest, related=related)
+        return CreatedNote(path=dest, related=related, chunk_count=results[0].chunk_count)
 
     async def _find_related(self, content: str) -> list[RelatedNote]:
         embedding = await self._embeddings.embed(content)
@@ -116,9 +119,20 @@ class NoteWriter:
         return related
 
     @staticmethod
-    def _render(title: str, content: str, tags: list[str] | None, related: list[RelatedNote]) -> str:
+    def _render(
+        title: str,
+        content: str,
+        tags: list[str] | None,
+        domain: str | None,
+        category: str | None,
+        related: list[RelatedNote],
+    ) -> str:
         created = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         frontmatter = ["---", f"created: {created}", "source: second-brain"]
+        if domain:
+            frontmatter.append(f"domain: {domain}")
+        if category:
+            frontmatter.append(f"category: {category}")
         if tags:
             frontmatter.append(f"tags: [{', '.join(tags)}]")
         frontmatter.append("---")

@@ -101,3 +101,23 @@ async def test_created_notes_are_cleaned_up_by_a_later_vault_sync(ctx, clean_doc
 
     assert str(created.path.resolve()) in sync_result.deleted
     assert await ctx.repository.get_by_source_path(str(created.path.resolve())) is None
+
+
+async def test_create_note_writes_domain_and_category_and_reports_chunk_count(
+    ctx, clean_documents, tmp_path
+):
+    writer = make_writer(ctx, tmp_path)
+    result = await writer.create_note(
+        "Imported Doc", "Some real content here.", domain="technology", category="devops"
+    )
+    clean_documents.append(str(result.path.resolve()))
+
+    assert result.chunk_count > 0
+
+    text = result.path.read_text(encoding="utf-8")
+    assert "domain: technology" in text
+    assert "category: devops" in text
+
+    doc = await ctx.repository.get_by_source_path(str(result.path.resolve()))
+    assert doc.domain == "technology"
+    assert doc.category == "devops"

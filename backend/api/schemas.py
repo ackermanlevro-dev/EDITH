@@ -78,6 +78,8 @@ class NoteCreateRequest(BaseModel):
     content: str
     folder: str | None = None
     tags: list[str] | None = None
+    domain: str | None = None
+    category: str | None = None
 
 
 class RelatedNoteItem(BaseModel):
@@ -88,4 +90,17 @@ class RelatedNoteItem(BaseModel):
 
 class NoteCreateResponse(BaseModel):
     path: str
+    chunk_count: int
     related: list[RelatedNoteItem]
+
+
+class UploadResponse(BaseModel):
+    """One shape for both upload outcomes: folded into the vault as a real
+    note (saved_as_note=True, related populated), or - no vault configured -
+    just indexed as an ordinary file (saved_as_note=False, related empty)."""
+
+    source_path: str
+    status: str
+    chunk_count: int
+    saved_as_note: bool
+    related: list[RelatedNoteItem] = []
